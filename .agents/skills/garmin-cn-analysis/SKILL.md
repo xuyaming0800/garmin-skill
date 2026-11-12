@@ -17,7 +17,7 @@ Use the bundled fetcher to create a local, redacted evidence bundle, then analyz
    ```
 
 3. Read `artifacts/garmin/analysis-brief.md`, then inspect only the needed sections of `artifacts/garmin/garmin-data.json`.
-4. If authentication, MFA, or Cloud setup fails, read [references/cloud-setup.md](references/cloud-setup.md). For data meanings and known limitations, read [references/data-guide.md](references/data-guide.md).
+4. For first-time authentication on a trusted local terminal, run the fetcher with `--interactive-auth --auth-only`: enter the Garmin username, password, and phone SMS/MFA code when prompted. Tokens default to `.garmin-tokens/garmin_tokens.json` and are reused on later runs. If authentication, verification, or Cloud setup fails, read [references/cloud-setup.md](references/cloud-setup.md). For data meanings and known limitations, read [references/data-guide.md](references/data-guide.md).
 
 Never print credentials, tokens, cookies, or the value of a secret. Never commit files under `artifacts/` or `.garmin-tokens/`. Keep location redaction enabled unless the user explicitly needs route/location analysis and understands the privacy impact.
 

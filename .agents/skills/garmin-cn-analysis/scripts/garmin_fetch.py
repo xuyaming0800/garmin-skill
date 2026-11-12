@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 DEFAULT_OUTPUT = Path("artifacts/garmin/garmin-data.json")
+DEFAULT_TOKEN_STORE = ".garmin-tokens"
 SENSITIVE_KEY = re.compile(
     r"(token|password|cookie|authorization|email|display.?name|profile.?id)",
     re.IGNORECASE,
@@ -24,6 +25,10 @@ LOCATION_KEY = re.compile(
     r"(latitude|longitude|polyline|geo.?point|start.?location|end.?location|address)",
     re.IGNORECASE,
 )
+
+
+class AuthenticationInputError(RuntimeError):
+    """An actionable authentication input error containing no secret values."""
 
 
 def parse_iso_date(value: str) -> date:
@@ -79,49 +84,84 @@ def call_section(
 
 def build_client(interactive_auth: bool = False) -> Any:
     try:
-        from garminconnect import Garmin
+        from garminconnect import Garmin, GarminConnectAuthenticationError
     except ImportError as exc:
         raise RuntimeError(
             "Missing dependency. Run: python3 -m pip install -r requirements.txt"
         ) from exc
 
-    email = os.getenv("GARMIN_EMAIL")
+    username = (os.getenv("GARMIN_USERNAME") or os.getenv("GARMIN_EMAIL") or "").strip()
     password = os.getenv("GARMIN_PASSWORD")
     token_json = os.getenv("GARMIN_TOKENS_JSON")
-    token_store = os.getenv("GARMIN_TOKEN_STORE")
-
-    if interactive_auth:
-        email = email or input("Garmin email: ").strip()
-        password = password or getpass.getpass("Garmin password: ")
-
-    if not token_json and not token_store and not (email and password):
-        raise RuntimeError(
-            "Set GARMIN_TOKENS_JSON, GARMIN_TOKEN_STORE, or both GARMIN_EMAIL and "
-            "GARMIN_PASSWORD. See references/cloud-setup.md."
-        )
-
-    mfa_code = os.getenv("GARMIN_MFA_CODE")
+    token_store = str(
+        Path(os.getenv("GARMIN_TOKEN_STORE") or DEFAULT_TOKEN_STORE).expanduser()
+    )
+    mfa_code = (os.getenv("GARMIN_MFA_CODE") or "").strip()
 
     def prompt_mfa() -> str:
+        nonlocal mfa_code
         if mfa_code:
-            return mfa_code
-        if interactive_auth:
-            return input("Garmin MFA code: ").strip()
-        raise RuntimeError(
-            "Garmin requested MFA. Bootstrap a reusable token locally with "
-            "--interactive-auth, or provide GARMIN_MFA_CODE for this run only."
-        )
+            code, mfa_code = mfa_code, ""
+        elif interactive_auth:
+            code = getpass.getpass(
+                "Garmin phone verification code (SMS/MFA): "
+            ).strip()
+        else:
+            raise AuthenticationInputError(
+                "Garmin requested a phone verification code. Use --interactive-auth "
+                "or provide GARMIN_MFA_CODE for this run only."
+            )
+        if not code:
+            raise AuthenticationInputError("Garmin phone verification code must not be empty.")
+        return code
 
-    client = Garmin(
-        email=email,
-        password=password,
-        is_cn=True,
-        prompt_mfa=prompt_mfa,
-        return_on_mfa=False,
-        retry_attempts=3,
-    )
-    login_source = token_json or token_store
-    client.login(login_source) if login_source else client.login()
+    try:
+        # Restore first so a valid token never requires credentials or another SMS.
+        client = Garmin(is_cn=True, retry_attempts=3)
+        try:
+            client.login(token_json or token_store)
+        except GarminConnectAuthenticationError:
+            if interactive_auth:
+                username = username or input("Garmin username: ").strip()
+                password = password or getpass.getpass("Garmin password: ")
+            if not username or not password:
+                raise AuthenticationInputError(
+                    "No usable Garmin token. Run --interactive-auth, or set "
+                    "GARMIN_USERNAME (GARMIN_EMAIL is also supported) and GARMIN_PASSWORD."
+                )
+            client = Garmin(
+                email=username,  # The library names its username argument 'email'.
+                password=password,
+                is_cn=True,
+                prompt_mfa=prompt_mfa,
+                return_on_mfa=False,
+                retry_attempts=3,
+            )
+            client.login(token_store)
+        else:
+            # Inline Cloud secrets stay in memory; local stores retain refreshed tokens.
+            if token_json:
+                return client
+    except AuthenticationInputError:
+        raise
+    except Exception as exc:
+        # Authentication exceptions may include credentials or token response bodies.
+        raise RuntimeError(
+            f"Garmin authentication failed ({type(exc).__name__}). Check the username, "
+            "password and phone verification code; use --interactive-auth or provide "
+            "GARMIN_MFA_CODE when verification is required. If rate limited, wait before retrying."
+        ) from None
+
+    # login() suppresses persistence errors; explicitly save so auth-only cannot report
+    # success when the reusable token was not actually written. The library enforces
+    # owner-only permissions and atomic writes.
+    try:
+        client.client.dump(token_store)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Garmin authenticated, but token saving failed ({type(exc).__name__}). "
+            "Check GARMIN_TOKEN_STORE permissions."
+        ) from None
     return client
 
 
@@ -288,7 +328,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--interactive-auth",
         action="store_true",
-        help="prompt locally for missing email, password, and MFA",
+        help="prompt locally for missing username, password, and phone verification code",
+    )
+    parser.add_argument(
+        "--auth-only",
+        action="store_true",
+        help="obtain/reuse a token without fetching training or health data",
     )
     parser.add_argument(
         "--include-location",
@@ -306,6 +351,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         start, end = date_window(args.days, args.end_date)
         client = build_client(interactive_auth=args.interactive_auth)
+        if args.auth_only:
+            print("Garmin authentication successful.")
+            return 0
         bundle = collect(client, start, end, min(args.sleep_days, args.days))
         bundle = redact(bundle, include_location=args.include_location)
         args.output.parent.mkdir(parents=True, exist_ok=True)

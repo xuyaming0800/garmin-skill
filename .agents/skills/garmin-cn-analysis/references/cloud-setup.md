@@ -19,19 +19,22 @@ Preferred Cloud setup:
 
 Fallback setup:
 
-- `GARMIN_EMAIL`
+- `GARMIN_USERNAME` (legacy `GARMIN_EMAIL` is also accepted; `GARMIN_USERNAME` takes priority)
 - `GARMIN_PASSWORD`
 
-Password login can require MFA and is therefore less reliable in a non-interactive Cloud task. `GARMIN_MFA_CODE` is accepted for a single run only; do not preserve a one-time code as a long-lived secret.
+Fresh authentication uses the Garmin username and password, followed by the phone verification code when Garmin requests SMS/MFA. The library handles requesting and submitting verification in the same login session. `GARMIN_MFA_CODE` is accepted for one verification attempt only; do not preserve a one-time code as a long-lived secret. Prefer interactive bootstrap because the code is normally delivered after submitting the credentials.
 
 To bootstrap locally without placing a password in shell history, run:
 
 ```bash
-export GARMIN_TOKEN_STORE=".garmin-tokens"
-python3 .agents/skills/garmin-cn-analysis/scripts/garmin_fetch.py --interactive-auth --days 1
+python3 .agents/skills/garmin-cn-analysis/scripts/garmin_fetch.py --interactive-auth --auth-only
 ```
 
-Enter the email, password, and MFA code when prompted. Copy the resulting `.garmin-tokens/garmin_tokens.json` content into the Cloud secret `GARMIN_TOKENS_JSON`, then delete unnecessary local copies. A Cloud task cannot update the stored secret when Garmin rotates a token, so repeat this bootstrap if token restoration eventually fails.
+Enter the username, password, and phone verification code when prompted. Password and code input is hidden. Tokens are saved by default to `.garmin-tokens/garmin_tokens.json`; set `GARMIN_TOKEN_STORE` to override the directory. The token file is owner-readable/writable only (`0600`) inside an owner-only directory (`0700`). A save failure is reported as an error. `--auth-only` skips training/health fetching and evidence output.
+
+Later runs restore saved tokens before asking for credentials, including with `--interactive-auth`. If restoration fails authentication, interactive mode asks for missing credentials and then a new code when Garmin requests verification. Network errors and rate limits stop the run. Non-interactive mode reports missing credentials or verification input instead of prompting.
+
+Copy the resulting `.garmin-tokens/garmin_tokens.json` content into the Cloud secret `GARMIN_TOKENS_JSON`, then delete unnecessary local copies. Inline tokens take priority over the local store and stay in memory when successfully restored. A Cloud task cannot update the stored secret when Garmin rotates a token, so repeat this bootstrap if token restoration eventually fails.
 
 Secrets exposed to a Cloud environment may be readable by code running in that environment. Use a dedicated environment, keep network access restricted, rotate credentials/tokens if exposure is suspected, and revoke Garmin sessions from account security settings when needed.
 
