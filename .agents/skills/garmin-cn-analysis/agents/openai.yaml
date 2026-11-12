@@ -1,0 +1,7 @@
+interface:
+  display_name: "Garmin 中国区训练分析"
+  short_description: "获取 Garmin 中国区训练与健康数据并生成分析"
+  default_prompt: "Use $garmin-cn-analysis to fetch my recent Garmin China data and analyze training and recovery."
+
+policy:
+  allow_implicit_invocation: true
